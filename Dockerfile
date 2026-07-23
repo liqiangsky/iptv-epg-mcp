@@ -14,5 +14,5 @@ COPY . .
 # 暴露 HF Spaces 默认端口
 EXPOSE 7860
 
-# 启动 HTTP/SSE 服务器
-CMD ["node", "http-server.js"]
+# 启动 HTTP/SSE 服务器（增加堆内存以处理大型 EPG 数据）
+CMD ["node", "--max-old-space-size=384", "http-server.js"]

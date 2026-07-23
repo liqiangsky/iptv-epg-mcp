@@ -88,6 +88,9 @@ function parseEpgXml(xmlBuffer) {
 
       try {
         const result = parser.parse(decompressed.toString('utf-8'));
+        // 释放解压缓冲区
+        decompressed = null;
+
         const tv = result.tv;
         if (!tv) throw new Error('No <tv> root element found');
 
@@ -106,19 +109,23 @@ function parseEpgXml(xmlBuffer) {
           channelNameMap[ch.id] = ch.displayName;
         }
 
-        // 解析节目列表
+        // 解析节目列表（使用更紧凑的对象结构节省内存）
         const programmes = (tv.programme || []).map((prog) => {
           const rawTitle = prog.title;
           const rawDesc = prog.desc;
           return {
-            channelId: String(prog['@_channel'] || ''),
-            channelName: channelNameMap[String(prog['@_channel'] || '')] || '',
-            start: prog['@_start'] || '',
-            stop: prog['@_stop'] || '',
-            title: String(rawTitle && typeof rawTitle === 'object' ? (rawTitle._text ?? '') : (rawTitle ?? '')),
-            desc: String(rawDesc && typeof rawDesc === 'object' ? (rawDesc._text ?? '') : (rawDesc ?? '')),
+            c: String(prog['@_channel'] || ''),           // channelId
+            s: prog['@_start'] || '',                      // start
+            e: prog['@_stop'] || '',                       // stop
+            t: String(rawTitle && typeof rawTitle === 'object' ? (rawTitle._text ?? '') : (rawTitle ?? '')),    // title
+            d: String(rawDesc && typeof rawDesc === 'object' ? (rawDesc._text ?? '') : (rawDesc ?? '')),        // desc
           };
         });
+
+        // 释放 XML DOM 树
+        delete result.tv;
+        delete tv.channel;
+        delete tv.programme;
 
         resolve({ channels, programmes, channelNameMap });
       } catch (parseErr) {
@@ -236,6 +243,7 @@ class EpgDataManager {
    */
   async getProgrammes(channelQuery, date, limit = 200) {
     const data = await this.getData();
+    const { channelNameMap } = data;
 
     // 查找匹配的频道
     const cq = channelQuery.toLowerCase();
@@ -255,30 +263,33 @@ class EpgDataManager {
       dateEnd = new Date(`${date}T23:59:59+08:00`);
     } else {
       const now = new Date();
-      // 取当天北京时间
       dateStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
       dateEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
     }
 
     const programmes = data.programmes.filter((p) => {
-      if (!matchedIds.has(p.channelId)) return false;
-      const startTime = parseEpgTime(p.start);
+      if (!matchedIds.has(p.c)) return false;
+      const startTime = parseEpgTime(p.s);
       if (!startTime) return false;
-      // 节目开始时间在日期范围内，或节目跨越这一天
       return startTime >= dateStart && startTime <= dateEnd;
     });
 
     // 按频道和时间排序
     programmes.sort((a, b) => {
-      if (a.channelId !== b.channelId) return a.channelId.localeCompare(b.channelId);
-      return a.start.localeCompare(b.start);
+      if (a.c !== b.c) return a.c.localeCompare(b.c);
+      return a.s.localeCompare(b.s);
     });
 
-    // 附加格式化时间
+    // 展开为完整对象
     const result = programmes.map((p) => ({
-      ...p,
-      startTime: formatTime(parseEpgTime(p.start)),
-      stopTime: formatTime(parseEpgTime(p.stop)),
+      channelId: p.c,
+      channelName: channelNameMap[p.c] || '',
+      start: p.s,
+      stop: p.e,
+      title: p.t,
+      desc: p.d,
+      startTime: formatTime(parseEpgTime(p.s)),
+      stopTime: formatTime(parseEpgTime(p.e)),
     }));
 
     const limited = limit > 0 ? result.slice(0, limit) : result;
@@ -300,10 +311,11 @@ class EpgDataManager {
   async searchProgrammes(keyword, date, limit = 50) {
     const data = await this.getData();
     const kw = keyword.toLowerCase();
+    const { channelNameMap } = data;
 
     let programmes = data.programmes.filter((p) => {
-      const matchesTitle = p.title.toLowerCase().includes(kw);
-      const matchesDesc = p.desc.toLowerCase().includes(kw);
+      const matchesTitle = p.t.toLowerCase().includes(kw);
+      const matchesDesc = p.d.toLowerCase().includes(kw);
       return matchesTitle || matchesDesc;
     });
 
@@ -312,7 +324,7 @@ class EpgDataManager {
       const dateStart = new Date(`${date}T00:00:00+08:00`);
       const dateEnd = new Date(`${date}T23:59:59+08:00`);
       programmes = programmes.filter((p) => {
-        const startTime = parseEpgTime(p.start);
+        const startTime = parseEpgTime(p.s);
         return startTime && startTime >= dateStart && startTime <= dateEnd;
       });
     }
@@ -320,19 +332,24 @@ class EpgDataManager {
     // 去重：同一频道同一时间同一标题的只保留一条
     const seen = new Set();
     programmes = programmes.filter((p) => {
-      const key = `${p.channelId}|${p.start}|${p.title}`;
+      const key = `${p.c}|${p.s}|${p.t}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
 
     // 按时间排序
-    programmes.sort((a, b) => a.start.localeCompare(b.start));
+    programmes.sort((a, b) => a.s.localeCompare(b.s));
 
     const result = programmes.map((p) => ({
-      ...p,
-      startTime: formatTime(parseEpgTime(p.start)),
-      stopTime: formatTime(parseEpgTime(p.stop)),
+      channelId: p.c,
+      channelName: channelNameMap[p.c] || '',
+      start: p.s,
+      stop: p.e,
+      title: p.t,
+      desc: p.d,
+      startTime: formatTime(parseEpgTime(p.s)),
+      stopTime: formatTime(parseEpgTime(p.e)),
     }));
 
     const limited = limit > 0 ? result.slice(0, limit) : result;
@@ -351,11 +368,12 @@ class EpgDataManager {
    */
   async getNowPlaying(channelQuery) {
     const data = await this.getData();
+    const { channelNameMap } = data;
     const now = new Date();
 
     let programmes = data.programmes.filter((p) => {
-      const startTime = parseEpgTime(p.start);
-      const stopTime = parseEpgTime(p.stop);
+      const startTime = parseEpgTime(p.s);
+      const stopTime = parseEpgTime(p.e);
       if (!startTime || !stopTime) return false;
       return startTime <= now && stopTime > now;
     });
@@ -363,16 +381,21 @@ class EpgDataManager {
     if (channelQuery) {
       const cq = channelQuery.toLowerCase();
       programmes = programmes.filter(
-        (p) => p.channelId === cq || p.channelName.toLowerCase().includes(cq)
+        (p) => p.c === cq || (channelNameMap[p.c] || '').toLowerCase().includes(cq)
       );
     }
 
-    programmes.sort((a, b) => a.channelId.localeCompare(b.channelId));
+    programmes.sort((a, b) => a.c.localeCompare(b.c));
 
     return programmes.map((p) => ({
-      ...p,
-      startTime: formatTime(parseEpgTime(p.start)),
-      stopTime: formatTime(parseEpgTime(p.stop)),
+      channelId: p.c,
+      channelName: channelNameMap[p.c] || '',
+      start: p.s,
+      stop: p.e,
+      title: p.t,
+      desc: p.d,
+      startTime: formatTime(parseEpgTime(p.s)),
+      stopTime: formatTime(parseEpgTime(p.e)),
     }));
   }
 }
