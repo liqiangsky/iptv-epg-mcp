@@ -1,12 +1,3 @@
----
-title: EPG 查询 MCP 服务器
-emoji: 📺
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-pinned: false
----
-
 # 📺 EPG 查询 MCP 服务器
 
 电视节目指南（EPG）查询工具，基于 [Model Context Protocol (MCP)](https://modelcontextprotocol.io) 协议。
@@ -31,7 +22,7 @@ pinned: false
 {
   "mcpServers": {
     "epg-query": {
-      "url": "https://你的-space名称.hf.space/sse"
+      "url": "http://localhost:7860/sse"
     }
   }
 }
