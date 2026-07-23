@@ -1,0 +1,25 @@
+{
+  "name": "epg-query-server",
+  "version": "1.0.0",
+  "description": "EPG 电视节目指南查询 MCP 服务器 — Hugging Face Spaces 部署版",
+  "main": "http-server.js",
+  "type": "commonjs",
+  "bin": {
+    "epg-server": "./server.js"
+  },
+  "scripts": {
+    "start": "node http-server.js",
+    "start:stdio": "node server.js",
+    "test": "node test.js",
+    "test:channels": "node -e \"const {EpgDataManager}=require('./epg-data');const m=new EpgDataManager();(async()=>{const c=await m.listChannels('CCTV');console.log(JSON.stringify(c.slice(0,10),null,2));process.exit(0);})()\""
+  },
+  "keywords": ["epg", "mcp", "tv-guide", "huggingface", "spaces"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "fast-xml-parser": "^5.10.1"
+  }
+}
