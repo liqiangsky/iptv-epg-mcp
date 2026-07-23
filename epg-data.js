@@ -109,23 +109,30 @@ function parseEpgXml(xmlBuffer) {
           channelNameMap[ch.id] = ch.displayName;
         }
 
-        // 解析节目列表（使用更紧凑的对象结构节省内存）
-        const programmes = (tv.programme || []).map((prog) => {
+        // 释放频道部分的 DOM 树
+        delete tv.channel;
+
+        // 解析节目列表（边解析边释放原始 DOM，减少峰值内存）
+        const rawProgrammes = tv.programme || [];
+        const programmes = new Array(rawProgrammes.length);
+        for (let i = 0; i < rawProgrammes.length; i++) {
+          const prog = rawProgrammes[i];
           const rawTitle = prog.title;
           const rawDesc = prog.desc;
-          return {
+          programmes[i] = {
             c: String(prog['@_channel'] || ''),           // channelId
             s: prog['@_start'] || '',                      // start
             e: prog['@_stop'] || '',                       // stop
             t: String(rawTitle && typeof rawTitle === 'object' ? (rawTitle._text ?? '') : (rawTitle ?? '')),    // title
             d: String(rawDesc && typeof rawDesc === 'object' ? (rawDesc._text ?? '') : (rawDesc ?? '')),        // desc
           };
-        });
+          // 释放原始 DOM 对象
+          rawProgrammes[i] = null;
+        }
 
         // 释放 XML DOM 树
-        delete result.tv;
-        delete tv.channel;
         delete tv.programme;
+        delete result.tv;
 
         resolve({ channels, programmes, channelNameMap });
       } catch (parseErr) {
