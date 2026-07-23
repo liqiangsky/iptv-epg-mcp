@@ -14,7 +14,7 @@ RUN npm install --production
 # 复制应用代码
 COPY . .
 
-# 暴露 HF Spaces 默认端口
+# 暴露服务端口
 EXPOSE 7860
 
 # 启动 HTTP/SSE 服务器

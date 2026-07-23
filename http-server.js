@@ -3,10 +3,10 @@
 /**
  * EPG 查询 MCP 服务器 — HTTP/SSE 模式
  *
- * 用于 Hugging Face Spaces 部署，将 MCP stdio 服务包装为 HTTP/SSE 传输层。
+ * 将 MCP stdio 服务包装为 HTTP/SSE 传输层，支持远程访问。
  *
  * 环境变量：
- *   PORT           - 监听端口（默认 7860，HF Spaces 默认端口）
+ *   PORT           - 监听端口（默认 7860）
  *   EPG_URL        - 自定义 EPG 数据源 URL
  *   EPG_CACHE_TTL  - 缓存时间（分钟，默认 30）
  */
