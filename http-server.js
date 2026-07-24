@@ -15,6 +15,18 @@
 // 默认时区为北京时间，Docker 容器无此环境变量会默认为 UTC
 process.env.TZ = process.env.TZ || 'Asia/Shanghai';
 
+// ========== 进程级错误防护：防止未捕获异常导致进程静默退出 ==========
+
+process.on('uncaughtException', (err) => {
+  console.error(`[FATAL] Uncaught exception: ${err.message}\n${err.stack}`);
+  // 不退出进程，记录后继续运行
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error(`[FATAL] Unhandled rejection: ${reason instanceof Error ? reason.message : String(reason)}`);
+  // 不退出进程，记录后继续运行
+});
+
 const express = require('express');
 const cors = require('cors');
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
@@ -271,22 +283,41 @@ const sessions = new Map();
  * MCP 客户端通过此端点建立 SSE 连接
  */
 app.get('/sse', async (req, res) => {
-  const transport = new SSEServerTransport('/messages', res);
-  const sessionId = transport.sessionId;
+  try {
+    const transport = new SSEServerTransport('/messages', res);
+    const sessionId = transport.sessionId;
 
-  sessions.set(sessionId, transport);
-  console.error(`[SSE] New session: ${sessionId}`);
+    sessions.set(sessionId, transport);
+    console.error(`[SSE] New session: ${sessionId}`);
 
-  // 每个会话创建独立的 Server 实例，避免 "Already connected" 错误
-  const mcpServer = createMcpServer();
+    // 每个会话创建独立的 Server 实例，避免 "Already connected" 错误
+    const mcpServer = createMcpServer();
 
-  // 连接断开时清理
-  res.on('close', () => {
-    console.error(`[SSE] Session closed: ${sessionId}`);
-    sessions.delete(sessionId);
-  });
+    // 连接断开时清理
+    res.on('close', () => {
+      console.error(`[SSE] Session closed: ${sessionId}`);
+      sessions.delete(sessionId);
+      clearInterval(keepaliveTimer);
+    });
 
-  await mcpServer.connect(transport);
+    // SSE 心跳：每 25 秒发送注释行，防止代理/Docker 关闭空闲连接
+    // SSE 注释（以 : 开头）被客户端忽略，仅用于保持 TCP 连接活跃
+    const keepaliveTimer = setInterval(() => {
+      try {
+        res.write(':keepalive\n\n');
+      } catch {
+        clearInterval(keepaliveTimer);
+      }
+    }, 25000);
+
+    await mcpServer.connect(transport);
+  } catch (err) {
+    console.error(`[SSE] Connection error: ${err.message}`);
+    // 如果 headers 还没发送，返回错误；否则连接已断开，无需处理
+    if (!res.headersSent) {
+      res.status(500).send(`SSE connection error: ${err.message}`);
+    }
+  }
 });
 
 /**
@@ -294,16 +325,23 @@ app.get('/sse', async (req, res) => {
  * 客户端通过此端点发送 JSON-RPC 消息
  */
 app.post('/messages', async (req, res) => {
-  // 从查询参数获取 sessionId
-  const sessionId = req.query.sessionId;
-  if (!sessionId) {
-    return res.status(400).json({ error: 'Missing sessionId query parameter' });
+  try {
+    // 从查询参数获取 sessionId
+    const sessionId = req.query.sessionId;
+    if (!sessionId) {
+      return res.status(400).json({ error: 'Missing sessionId query parameter' });
+    }
+    const transport = sessions.get(sessionId);
+    if (!transport) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    await transport.handlePostMessage(req, res);
+  } catch (err) {
+    console.error(`[SSE] POST /messages error: ${err.message}`);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
   }
-  const transport = sessions.get(sessionId);
-  if (!transport) {
-    return res.status(404).json({ error: 'Session not found' });
-  }
-  await transport.handlePostMessage(req, res);
 });
 
 /**

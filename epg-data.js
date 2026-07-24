@@ -24,6 +24,7 @@ function fetchBuffer(urlStr, retries = 3, timeout = 30000) {
     const transport = url.protocol === 'https:' ? https : http;
 
     const attempt = (remaining) => {
+      const startTime = Date.now();
       const req = transport.get(urlStr, { timeout }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           // 处理重定向
@@ -41,8 +42,15 @@ function fetchBuffer(urlStr, retries = 3, timeout = 30000) {
           return reject(new Error(`HTTP ${res.statusCode}`));
         }
         const chunks = [];
-        res.on('data', (chunk) => chunks.push(chunk));
-        res.on('end', () => resolve(Buffer.concat(chunks)));
+        let totalSize = 0;
+        res.on('data', (chunk) => {
+          chunks.push(chunk);
+          totalSize += chunk.length;
+        });
+        res.on('end', () => {
+          console.error(`[EPG] Download speed: ${(totalSize / 1024 / ((Date.now() - startTime) / 1000)).toFixed(0)} KB/s`);
+          resolve(Buffer.concat(chunks));
+        });
         res.on('error', (err) => {
           if (remaining > 0) {
             setTimeout(() => attempt(remaining - 1), 1000);
@@ -76,9 +84,12 @@ function fetchBuffer(urlStr, retries = 3, timeout = 30000) {
  */
 function parseEpgXml(xmlBuffer) {
   return new Promise((resolve, reject) => {
+    console.time('[EPG] gunzip');
     zlib.gunzip(xmlBuffer, (err, decompressed) => {
+      console.timeEnd('[EPG] gunzip');
       if (err) return reject(new Error(`Failed to decompress: ${err.message}`));
 
+      console.time('[EPG] XML parse');
       const parser = new XMLParser({
         ignoreAttributes: false,
         attributeNamePrefix: '@_',
@@ -86,14 +97,18 @@ function parseEpgXml(xmlBuffer) {
         isArray: (name) => name === 'channel' || name === 'programme' || name === 'display-name',
       });
 
+      const xmlStr = decompressed.toString('utf-8');
+      console.error(`[EPG] XML string size: ${(xmlStr.length / 1024 / 1024).toFixed(1)} MB`);
       try {
-        const result = parser.parse(decompressed.toString('utf-8'));
+        const result = parser.parse(xmlStr);
         // 释放解压缓冲区
         decompressed = null;
+        console.timeEnd('[EPG] XML parse');
 
         const tv = result.tv;
         if (!tv) throw new Error('No <tv> root element found');
 
+        console.time('[EPG] channels transform');
         // 解析频道列表
         const channels = (tv.channel || []).map((ch) => ({
           id: String(ch['@_id'] || ''),
@@ -108,10 +123,12 @@ function parseEpgXml(xmlBuffer) {
         for (const ch of channels) {
           channelNameMap[ch.id] = ch.displayName;
         }
+        console.timeEnd('[EPG] channels transform');
 
         // 释放频道部分的 DOM 树
         delete tv.channel;
 
+        console.time('[EPG] programmes transform');
         // 解析节目列表（边解析边释放原始 DOM，减少峰值内存）
         const rawProgrammes = tv.programme || [];
         const programmes = new Array(rawProgrammes.length);
@@ -129,6 +146,7 @@ function parseEpgXml(xmlBuffer) {
           // 释放原始 DOM 对象
           rawProgrammes[i] = null;
         }
+        console.timeEnd('[EPG] programmes transform');
 
         // 释放 XML DOM 树
         delete tv.programme;
@@ -225,9 +243,13 @@ class EpgDataManager {
 
   async _fetchAndParse() {
     console.error(`[EPG] Fetching data from ${this.epgUrl}...`);
+    console.time('[EPG] network');
     const buffer = await fetchBuffer(this.epgUrl);
-    console.error(`[EPG] Received ${(buffer.length / 1024).toFixed(0)} KB`);
+    console.timeEnd('[EPG] network');
+    console.error(`[EPG] Received ${(buffer.length / 1024).toFixed(0)} KB (gzipped)`);
+    console.time('[EPG] total parse');
     const data = await parseEpgXml(buffer);
+    console.timeEnd('[EPG] total parse');
     console.error(`[EPG] Parsed: ${data.channels.length} channels, ${data.programmes.length} programmes`);
     return data;
   }
