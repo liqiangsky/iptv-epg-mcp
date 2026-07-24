@@ -193,6 +193,11 @@ class EpgDataManager {
       return this.cachedData;
     }
 
+    // 强制刷新时先释放旧缓存，降低峰值内存
+    if (forceRefresh) {
+      this.cachedData = null;
+    }
+
     // 防止并发请求
     if (this.fetchPromise) {
       return this.fetchPromise;

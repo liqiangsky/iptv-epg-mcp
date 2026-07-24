@@ -9,7 +9,11 @@
  *   PORT           - 监听端口（默认 7860）
  *   EPG_URL        - 自定义 EPG 数据源 URL
  *   EPG_CACHE_TTL  - 缓存时间（分钟，默认 30）
+ *   TZ             - 时区（默认 Asia/Shanghai）
  */
+
+// 默认时区为北京时间，Docker 容器无此环境变量会默认为 UTC
+process.env.TZ = process.env.TZ || 'Asia/Shanghai';
 
 const express = require('express');
 const cors = require('cors');
@@ -32,149 +36,157 @@ const epgManager = new EpgDataManager({
   cacheTtl: cacheTtlMin * 60 * 1000,
 });
 
-const server = new Server(
-  {
-    name: 'epg-query-server',
-    version: '1.0.0',
-  },
-  {
-    capabilities: {
-      tools: {},
+/**
+ * 创建 MCP Server 实例（每个 SSE 会话一个实例）
+ * 避免 "Already connected to a transport" 错误
+ */
+function createMcpServer() {
+  const server = new Server(
+    {
+      name: 'epg-query-server',
+      version: '1.0.0',
     },
-  }
-);
-
-// 工具定义
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: 'list_channels',
-        description: '获取所有电视频道列表，可按名称关键词筛选',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            keyword: {
-              type: 'string',
-              description: '搜索关键词（可选），按频道名称或 ID 模糊搜索',
-            },
-          },
-        },
+    {
+      capabilities: {
+        tools: {},
       },
-      {
-        name: 'get_programmes',
-        description: '查询指定频道的节目单，可指定日期',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            channel: {
-              type: 'string',
-              description: '频道名称或 ID（支持模糊匹配），例如 "CCTV1"、"湖南卫视"',
-            },
-            date: {
-              type: 'string',
-              description: '日期（可选），格式 YYYY-MM-DD，不传则查当天节目',
-            },
-            limit: {
-              type: 'number',
-              description: '返回条数上限（可选，默认 200）',
-            },
-          },
-          required: ['channel'],
-        },
-      },
-      {
-        name: 'search_programmes',
-        description: '跨频道搜索节目，按节目名称或描述关键词搜索',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            keyword: {
-              type: 'string',
-              description: '搜索关键词，用于匹配节目名称或描述',
-            },
-            date: {
-              type: 'string',
-              description: '日期（可选），格式 YYYY-MM-DD，不传则搜索所有日期',
-            },
-            limit: {
-              type: 'number',
-              description: '返回条数上限（可选，默认 50）',
-            },
-          },
-          required: ['keyword'],
-        },
-      },
-      {
-        name: 'now_playing',
-        description: '获取当前正在播放的节目列表',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            channel: {
-              type: 'string',
-              description: '频道名称或 ID（可选），不传则返回所有频道当前节目',
-            },
-          },
-        },
-      },
-      {
-        name: 'refresh_data',
-        description: '强制刷新 EPG 数据缓存，从远程重新获取最新数据',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-        },
-      },
-    ],
-  };
-});
-
-// 工具调用处理
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-  try {
-    switch (name) {
-      case 'list_channels': {
-        const keyword = args?.keyword || '';
-        const channels = await epgManager.listChannels(keyword);
-        return {
-          content: [{ type: 'text', text: formatChannelList(channels, keyword) }],
-        };
-      }
-      case 'get_programmes': {
-        if (!args?.channel) throw new Error('缺少必填参数: channel');
-        const result = await epgManager.getProgrammes(args.channel, args.date || undefined, args.limit || 200);
-        return {
-          content: [{ type: 'text', text: formatProgrammeList(result, args.channel) }],
-        };
-      }
-      case 'search_programmes': {
-        if (!args?.keyword) throw new Error('缺少必填参数: keyword');
-        const result = await epgManager.searchProgrammes(args.keyword, args.date || undefined, args.limit || 50);
-        return {
-          content: [{ type: 'text', text: formatSearchResult(result) }],
-        };
-      }
-      case 'now_playing': {
-        const programmes = await epgManager.getNowPlaying(args?.channel || undefined);
-        const now = new Date();
-        const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-        return {
-          content: [{ type: 'text', text: formatNowPlaying(programmes, timeStr) }],
-        };
-      }
-      case 'refresh_data': {
-        await epgManager.getData(true);
-        return { content: [{ type: 'text', text: '✅ EPG 数据已刷新' }] };
-      }
-      default:
-        throw new Error(`未知工具: ${name}`);
     }
-  } catch (err) {
-    return { content: [{ type: 'text', text: `❌ 错误: ${err.message}` }], isError: true };
-  }
-});
+  );
+
+  // 工具定义
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return {
+      tools: [
+        {
+          name: 'list_channels',
+          description: '获取所有电视频道列表，可按名称关键词筛选',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              keyword: {
+                type: 'string',
+                description: '搜索关键词（可选），按频道名称或 ID 模糊搜索',
+              },
+            },
+          },
+        },
+        {
+          name: 'get_programmes',
+          description: '查询指定频道的节目单，可指定日期',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              channel: {
+                type: 'string',
+                description: '频道名称或 ID（支持模糊匹配），例如 "CCTV1"、"湖南卫视"',
+              },
+              date: {
+                type: 'string',
+                description: '日期（可选），格式 YYYY-MM-DD，不传则查当天节目',
+              },
+              limit: {
+                type: 'number',
+                description: '返回条数上限（可选，默认 200）',
+              },
+            },
+            required: ['channel'],
+          },
+        },
+        {
+          name: 'search_programmes',
+          description: '跨频道搜索节目，按节目名称或描述关键词搜索',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              keyword: {
+                type: 'string',
+                description: '搜索关键词，用于匹配节目名称或描述',
+              },
+              date: {
+                type: 'string',
+                description: '日期（可选），格式 YYYY-MM-DD，不传则搜索所有日期',
+              },
+              limit: {
+                type: 'number',
+                description: '返回条数上限（可选，默认 50）',
+              },
+            },
+            required: ['keyword'],
+          },
+        },
+        {
+          name: 'now_playing',
+          description: '获取当前正在播放的节目列表',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              channel: {
+                type: 'string',
+                description: '频道名称或 ID（可选），不传则返回所有频道当前节目',
+              },
+            },
+          },
+        },
+        {
+          name: 'refresh_data',
+          description: '强制刷新 EPG 数据缓存，从远程重新获取最新数据',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+          },
+        },
+      ],
+    };
+  });
+
+  // 工具调用处理
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+    try {
+      switch (name) {
+        case 'list_channels': {
+          const keyword = args?.keyword || '';
+          const channels = await epgManager.listChannels(keyword);
+          return {
+            content: [{ type: 'text', text: formatChannelList(channels, keyword) }],
+          };
+        }
+        case 'get_programmes': {
+          if (!args?.channel) throw new Error('缺少必填参数: channel');
+          const result = await epgManager.getProgrammes(args.channel, args.date || undefined, args.limit || 200);
+          return {
+            content: [{ type: 'text', text: formatProgrammeList(result, args.channel) }],
+          };
+        }
+        case 'search_programmes': {
+          if (!args?.keyword) throw new Error('缺少必填参数: keyword');
+          const result = await epgManager.searchProgrammes(args.keyword, args.date || undefined, args.limit || 50);
+          return {
+            content: [{ type: 'text', text: formatSearchResult(result) }],
+          };
+        }
+        case 'now_playing': {
+          const programmes = await epgManager.getNowPlaying(args?.channel || undefined);
+          const now = new Date();
+          const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+          return {
+            content: [{ type: 'text', text: formatNowPlaying(programmes, timeStr) }],
+          };
+        }
+        case 'refresh_data': {
+          await epgManager.getData(true);
+          return { content: [{ type: 'text', text: '✅ EPG 数据已刷新' }] };
+        }
+        default:
+          throw new Error(`未知工具: ${name}`);
+      }
+    } catch (err) {
+      return { content: [{ type: 'text', text: `❌ 错误: ${err.message}` }], isError: true };
+    }
+  });
+
+  return server;
+}
 
 // ========== 格式化输出函数 ==========
 
@@ -247,7 +259,9 @@ function formatNowPlaying(programmes, timeStr) {
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+
+// 不使用全局 express.json()，避免消费 /messages 的请求体流
+// SSEServerTransport.handlePostMessage 内部通过 raw-body 读取
 
 // 存储活跃的 SSE 传输实例
 const sessions = new Map();
@@ -257,11 +271,14 @@ const sessions = new Map();
  * MCP 客户端通过此端点建立 SSE 连接
  */
 app.get('/sse', async (req, res) => {
-  const sessionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const transport = new SSEServerTransport('/messages', res);
+  const sessionId = transport.sessionId;
+
+  sessions.set(sessionId, transport);
   console.error(`[SSE] New session: ${sessionId}`);
 
-  const transport = new SSEServerTransport('/messages', res);
-  sessions.set(sessionId, transport);
+  // 每个会话创建独立的 Server 实例，避免 "Already connected" 错误
+  const mcpServer = createMcpServer();
 
   // 连接断开时清理
   res.on('close', () => {
@@ -269,7 +286,7 @@ app.get('/sse', async (req, res) => {
     sessions.delete(sessionId);
   });
 
-  await server.connect(transport);
+  await mcpServer.connect(transport);
 });
 
 /**
